@@ -31,16 +31,16 @@ Pentru că datasetul e dezechilibrat (sunt mai multe cazuri de pneumonie decât 
 
 Structura repo-ului
 matlab/
-    clasificare_pneumonie.m
+    codradiografiioptimizat.m
 
 python/
-    resnet18_colab.ipynb
-    resnet50_colab.ipynb
+    Licenta_AI_Python_ResNet-18.ipynb
+    Licenta_AI_Python_ResNet-50.ipynb
 
 results/
-    matrice_confuzie_resnet18.png
-    matrice_confuzie_resnet50.png
-    grafic_performanta.png
+    Matrice_Confuzie_Python_ResNet-18.png
+    Matrice_Confuzie_Python_ResNet-50.png
+    Matricea de confuzie_Matlab.png
 
 Cum rulezi
 MATLAB: descarcă datasetul de pe Kaggle, schimbă datasetPath din script cu calea ta și rulează în MATLAB R2021a sau mai nou.
