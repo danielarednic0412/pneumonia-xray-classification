@@ -1,0 +1,159 @@
+# ==============================================================================
+# PASUL 1: CONECTAREA LA DRIVE, EXTRAGEREA DATELOR ȘI INSTALAREA RESNET-18
+# ==============================================================================
+from google.colab import drive
+import zipfile
+import os
+
+drive.mount('/content/drive')
+
+# Calea către arhiva ta exactă, conform imaginilor
+zip_path = '/content/drive/MyDrive/chest_xrayzip.zip'
+extract_path = '/content/dataset'
+
+print("1. Extragem imaginile din arhiva ZIP...")
+if not os.path.exists(extract_path):
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_path)
+    print("Extragere finalizată cu succes!")
+else:
+    print("Imaginile sunt deja extrase.")
+
+# Căile corectate, luând în calcul folderul intermediar 'chest_xray'
+train_dir = os.path.join(extract_path, 'chest_xray', 'train')
+val_dir = os.path.join(extract_path, 'chest_xray', 'val')
+test_dir = os.path.join(extract_path, 'chest_xray', 'test')
+
+print("2. Instalăm arhitectura ResNet-18 pentru Python...")
+!pip install image-classifiers==1.0.0 -q
+from classification_models.keras import Classifiers
+
+# ==============================================================================
+# PASUL 2: PREGĂTIREA DATELOR (CU DATA AUGMENTATION ANTI-OVERFITTING)
+# ==============================================================================
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+print("\n3. Pregătim imaginile cu Augmentare pentru a preveni memorarea...")
+ResNet18, preprocess_input = Classifiers.get('resnet18')
+
+# Rotim, mărim și mișcăm subtil pozele pentru antrenament
+train_datagen = ImageDataGenerator(
+    preprocessing_function=preprocess_input,
+    rotation_range=10,
+    zoom_range=0.1,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    fill_mode='nearest'
+)
+
+test_val_datagen = ImageDataGenerator(preprocessing_function=preprocess_input)
+
+train_generator = train_datagen.flow_from_directory(
+    train_dir, target_size=(224, 224), batch_size=32, class_mode='binary')
+val_generator = test_val_datagen.flow_from_directory(
+    val_dir, target_size=(224, 224), batch_size=32, class_mode='binary', shuffle=False)
+test_generator = test_val_datagen.flow_from_directory(
+    test_dir, target_size=(224, 224), batch_size=32, class_mode='binary', shuffle=False)
+
+# ==============================================================================
+# PASUL 3: CONSTRUIREA MODELULUI (Cu strat tampon)
+# ==============================================================================
+print("\n4. Construim creierul artificial (ResNet-18)...")
+base_model = ResNet18(input_shape=(224, 224, 3), weights='imagenet', include_top=False)
+base_model.trainable = False
+
+x = base_model.output
+x = tf.keras.layers.GlobalAveragePooling2D()(x)
+x = tf.keras.layers.Dense(256, activation='relu')(x)
+x = tf.keras.layers.Dropout(0.5)(x)
+predictions = tf.keras.layers.Dense(1, activation='sigmoid')(x)
+model = tf.keras.models.Model(inputs=base_model.input, outputs=predictions)
+
+# Echilibrarea claselor pentru a nu favoriza pneumonia
+class_weights = {0: 2.5, 1: 1.0}
+
+# ==============================================================================
+# PASUL 4: ANTRENAREA BLÂNDĂ ÎN 2 FAZE (Cu protecție supremă la memorare)
+# ==============================================================================
+print("\n5. Începem antrenarea modelului (Faza 1 - Încălzire)...")
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
+              loss='binary_crossentropy', metrics=['accuracy'])
+model.fit(train_generator, epochs=3, validation_data=val_generator, class_weight=class_weights)
+
+print("\n6. Dezghețăm modelul pentru reglajul fin (Faza 2)...")
+base_model.trainable = True
+for layer in base_model.layers:
+    if isinstance(layer, tf.keras.layers.BatchNormalization):
+        layer.trainable = False
+
+early_stop = tf.keras.callbacks.EarlyStopping(
+    monitor='val_loss', patience=4, restore_best_weights=True, verbose=1)
+reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+    monitor='val_loss', factor=0.5, patience=2, min_lr=1e-7, verbose=1)
+
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+              loss='binary_crossentropy', metrics=['accuracy'])
+
+istoric = model.fit(train_generator, epochs=15, validation_data=val_generator,
+                    class_weight=class_weights, callbacks=[reduce_lr, early_stop])
+
+# ==============================================================================
+# PASUL 5: EVALUARE FINALĂ ȘI GENERARE GRAFICE
+# ==============================================================================
+print("\n7. Evaluăm modelul pe setul de test (Acuratețea Generală)...")
+test_loss, test_acc = model.evaluate(test_generator)
+print(f"\n>>> ACURATEȚEA GENERALĂ A MODELULUI RESNET-18 ESTE: {test_acc * 100:.2f}% <<<")
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+import numpy as np
+
+print("Generăm graficele și le salvăm în Drive...")
+test_generator.reset()
+predictions_test = model.predict(test_generator)
+y_pred = np.where(predictions_test > 0.5, 1, 0).flatten()
+y_true = test_generator.classes
+
+# A. Matricea de Confuzie
+cm = confusion_matrix(y_true, y_pred)
+plt.figure(figsize=(7,6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=['NORMAL (0)', 'PNEUMONIA (1)'],
+            yticklabels=['NORMAL (0)', 'PNEUMONIA (1)'],
+            annot_kws={"size": 16})
+plt.title('Matrice de Confuzie - ResNet18 (Optimizat)', fontsize=14)
+plt.ylabel('Adevărul (Diagnostic Real)')
+plt.xlabel('Predicția AI-ului')
+plt.tight_layout()
+plt.savefig('/content/drive/MyDrive/Matrice_Confuzie_Final.png', dpi=300)
+plt.show()
+
+# B. Graficul de Antrenare
+plt.figure(figsize=(14, 5))
+plt.subplot(1, 2, 1)
+plt.plot(istoric.history['accuracy'], label='Antrenare', linewidth=2)
+plt.plot(istoric.history['val_accuracy'], label='Validare', linewidth=2)
+plt.title('Evoluția Acurateței pe Epoci', fontsize=14)
+plt.xlabel('Epoca')
+plt.ylabel('Acuratețe')
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.7)
+
+plt.subplot(1, 2, 2)
+plt.plot(istoric.history['loss'], label='Eroare Antrenare (Loss)', color='red', linewidth=2)
+plt.plot(istoric.history['val_loss'], label='Eroare Validare (Val_Loss)', color='orange', linewidth=2)
+plt.title('Evoluția Erorii (Loss) pe Epoci', fontsize=14)
+plt.xlabel('Epoca')
+plt.ylabel('Eroare (Loss)')
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.7)
+
+plt.tight_layout()
+plt.savefig('/content/drive/MyDrive/Grafic_Antrenare_Final.png', dpi=300)
+plt.show()
+
+# C. Salvarea modelului
+model.save('/content/drive/MyDrive/ModelPneumonie_ResNet18_Final.h5')
+print("\nGATA! Graficele (Matrice_Confuzie_Final.png, Grafic_Antrenare_Final.png) și modelul (.h5) au fost salvate în Drive!")
